@@ -188,7 +188,7 @@ search_log = Counter()
 # AUTH
 # ══════════════════════════════════════════════
 
-@app.post("/login")
+@app.post("/api/login")
 def login(data: LoginModel):
 
     db = get_db()
