@@ -10,5 +10,6 @@ dependencies = [
     "pandas",
     "scikit-learn",
     "httpx",
-    "python-multipart"
+    "python-multipart",
+    "psycopg2-binary>=2.9.9"
 ]
