@@ -1,344 +1,929 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import mysql.connector
+from datetime import date, datetime
+import httpx
+from fastapi import Query, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+import pandas as pd
+import shutil
+from pathlib import Path
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from collections import Counter
+import uuid
+import os
+import pandas as pd
+import shutil
 
+from pathlib import Path
 
-app = FastAPI(
-    title="Vercel + FastAPI",
-    description="Vercel + FastAPI",
-    version="1.0.0",
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+from sklearn.metrics.pairwise import cosine_similarity
+
+from collections import Counter
+
+import uuid
+
+from fastapi import (
+    UploadFile,
+    File,
+    Form,
+    Query
 )
 
+from fastapi.responses import HTMLResponse
 
-@app.get("/api/data")
-def get_sample_data():
+from fastapi.staticfiles import StaticFiles
+
+app = FastAPI(title="Sistem Perpustakaan API")
+
+# ══════════════════════════════════════════════
+# CORS
+# ══════════════════════════════════════════════
+
+origins = [
+    "http://127.0.0.1:8000",
+    "http://localhost:3000"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ══════════════════════════════════════════════
+# DATABASE
+# ══════════════════════════════════════════════
+
+def get_db():
+    return mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="",
+        database="perpuspbjt"
+    )
+
+# ══════════════════════════════════════════════
+# MODELS
+# ══════════════════════════════════════════════
+
+class LoginModel(BaseModel):
+    username: str
+    password: str
+
+
+class BookModel(BaseModel):
+    id: str
+    title: str
+    author: str
+    category: str
+
+
+class BorrowModel(BaseModel):
+    user_id: int
+    book_id: str
+    borrower_name: str
+    member_id: str
+    phone: str
+    due_date: str
+
+
+class ReturnModel(BaseModel):
+    book_id: str
+
+
+class ScanModel(BaseModel):
+    image_base64: str
+
+class MemberModel(BaseModel):
+    member_code:str
+    name: str
+    nim:str
+    major:str
+    phone:str
+    address:str
+
+BASE_DIR = Path(__file__).resolve().parent
+DATASET_PATH = BASE_DIR / "dataset_buku.csv"
+IMAGES_DIR = BASE_DIR / "static/images"
+
+IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+# =====================
+# INIT APP
+# =====================
+app = FastAPI(title="Sistem Rekomendasi Buku")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
+
+# =====================
+# LOAD DATASET
+# =====================
+if DATASET_PATH.exists():
+    df = pd.read_csv(DATASET_PATH)
+else:
+    df = pd.DataFrame(columns=[
+        "judul",
+        "pengarang",
+        "klasifikasi",
+        "status",
+        "genre_utama",
+        "subgenre",
+        "genre",
+        "content",
+        "image_url"
+    ])
+
+df = df.fillna("")
+def normalize_filename(text):
+    return text.lower().strip().replace(" ", "_")
+
+def find_existing_image(judul):
+    base_name = normalize_filename(judul)
+
+    for ext in ["jpg", "jpeg", "png", "webp"]:
+        file_path = IMAGES_DIR / f"{base_name}.{ext}"
+        if file_path.exists():
+            return f"/images/{base_name}.{ext}"
+
+    return "/images/no_cover.png"
+
+df["image_url"] = df["judul"].apply(find_existing_image)
+
+# =====================
+# TF-IDF SETUP
+# =====================
+vectorizer = TfidfVectorizer(stop_words=None)
+tfidf_matrix = None
+
+def update_tfidf():
+    global tfidf_matrix
+    if len(df) == 0:
+        tfidf_matrix = None
+        return
+    
+    tfidf_matrix = vectorizer.fit_transform(df["content"])
+
+update_tfidf()
+
+search_log = Counter()
+
+# ══════════════════════════════════════════════
+# AUTH
+# ══════════════════════════════════════════════
+
+@app.post("/login")
+def login(data: LoginModel):
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute(
+        "SELECT * FROM users WHERE username=%s AND password=%s",
+        (data.username, data.password)
+    )
+
+    user = cur.fetchone()
+
+    db.close()
+
+    if user:
+        return {
+            "user_id": user["id"],
+            "username": user["username"],
+            "role": user.get("role", "petugas")
+        }
+
+    raise HTTPException(
+        status_code=401,
+        detail="Username atau password salah"
+    )
+
+
+# ══════════════════════════════════════════════
+# BOOKS
+# ══════════════════════════════════════════════
+
+@app.get("/books")
+def get_books():
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT *
+        FROM books
+        ORDER BY id
+    """)
+
+    books = cur.fetchall()
+
+    db.close()
+
+    return books
+
+
+@app.get("/books/available")
+def get_available_books():
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT *
+        FROM books
+        WHERE status='tersedia'
+        ORDER BY title
+    """)
+
+    books = cur.fetchall()
+
+    db.close()
+
+    return books
+
+
+@app.get("/books/search")
+def search_books(q: str = ""):
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    like = f"%{q}%"
+
+    cur.execute("""
+        SELECT *
+        FROM books
+        WHERE title LIKE %s
+        OR author LIKE %s
+        OR id LIKE %s
+    """, (like, like, like))
+
+    books = cur.fetchall()
+
+    db.close()
+
+    return books
+
+class RequestRekomendasi(BaseModel):
+    genre: str
+    subgenre: str
+
+@app.post("/recommend")
+def recommend(data: RequestRekomendasi):
+
+    if tfidf_matrix is None:
+        return {"recommendations": [], "popular": []}
+
+    query_text = f"{data.genre} {data.subgenre}".strip()
+    query_vec = vectorizer.transform([query_text])
+
+    similarity = cosine_similarity(query_vec, tfidf_matrix)[0]
+    top_idx = similarity.argsort()[-5:][::-1]
+
+    hasil = []
+
+    for i in top_idx:
+        row = df.iloc[i]
+
+        hasil.append({
+            "judul": row["judul"],
+            "pengarang": row["pengarang"],
+            "klasifikasi": row["klasifikasi"],
+            "image_url": row["image_url"],
+            "description": f"Buku karya {row['pengarang']}"
+        })
+
+        search_log[row["judul"]] += 1
+
     return {
-        "data": [
-            {"id": 1, "name": "Sample Item 1", "value": 100},
-            {"id": 2, "name": "Sample Item 2", "value": 200},
-            {"id": 3, "name": "Sample Item 3", "value": 300}
-        ],
-        "total": 3,
-        "timestamp": "2024-01-01T00:00:00Z"
+        "recommendations": hasil,
+        "popular": [j for j, _ in search_log.most_common(5)]
     }
 
 
-@app.get("/api/items/{item_id}")
-def get_item(item_id: int):
+
+@app.post("/books")
+def add_book(book: BookModel):
+
+    db = get_db()
+    cur = db.cursor()
+
+    try:
+
+        cur.execute("""
+            INSERT INTO books (
+                id,
+                title,
+                author,
+                category,
+                status
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                'tersedia'
+            )
+        """, (
+            book.id,
+            book.title,
+            book.author,
+            book.category
+        ))
+
+        db.commit()
+
+    except mysql.connector.IntegrityError:
+
+        db.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail="ID buku sudah ada"
+        )
+
+    db.close()
+
     return {
-        "item": {
-            "id": item_id,
-            "name": "Sample Item " + str(item_id),
-            "value": item_id * 100
-        },
-        "timestamp": "2024-01-01T00:00:00Z"
+        "message":
+        f"Buku '{book.title}' berhasil ditambahkan"
     }
 
 
-@app.get("/", response_class=HTMLResponse)
-def read_root():
-    return """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Vercel + FastAPI</title>
-        <link rel="icon" type="image/x-icon" href="/favicon.ico">
-        <style>
-            * {
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }
-            
-            body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
-                background-color: #000000;
-                color: #ffffff;
-                line-height: 1.6;
-                min-height: 100vh;
-                display: flex;
-                flex-direction: column;
-            }
-            
-            header {
-                border-bottom: 1px solid #333333;
-                padding: 0;
-            }
-            
-            nav {
-                max-width: 1200px;
-                margin: 0 auto;
-                display: flex;
-                align-items: center;
-                padding: 1rem 2rem;
-                gap: 2rem;
-            }
-            
-            .logo {
-                font-size: 1.25rem;
-                font-weight: 600;
-                color: #ffffff;
-                text-decoration: none;
-            }
-            
-            .nav-links {
-                display: flex;
-                gap: 1.5rem;
-                margin-left: auto;
-            }
-            
-            .nav-links a {
-                text-decoration: none;
-                color: #888888;
-                padding: 0.5rem 1rem;
-                border-radius: 6px;
-                transition: all 0.2s ease;
-                font-size: 0.875rem;
-                font-weight: 500;
-            }
-            
-            .nav-links a:hover {
-                color: #ffffff;
-                background-color: #111111;
-            }
-            
-            main {
-                flex: 1;
-                max-width: 1200px;
-                margin: 0 auto;
-                padding: 4rem 2rem;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                text-align: center;
-            }
-            
-            .hero {
-                margin-bottom: 3rem;
-            }
-            
-            .hero-code {
-                margin-top: 2rem;
-                width: 100%;
-                max-width: 900px;
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            }
-            
-            .hero-code pre {
-                background-color: #0a0a0a;
-                border: 1px solid #333333;
-                border-radius: 8px;
-                padding: 1.5rem;
-                text-align: left;
-                grid-column: 1 / -1;
-            }
-            
-            h1 {
-                font-size: 3rem;
-                font-weight: 700;
-                margin-bottom: 1rem;
-                background: linear-gradient(to right, #ffffff, #888888);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-            }
-            
-            .subtitle {
-                font-size: 1.25rem;
-                color: #888888;
-                margin-bottom: 2rem;
-                max-width: 600px;
-            }
-            
-            .cards {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 1.5rem;
-                width: 100%;
-                max-width: 900px;
-            }
-            
-            .card {
-                background-color: #111111;
-                border: 1px solid #333333;
-                border-radius: 8px;
-                padding: 1.5rem;
-                transition: all 0.2s ease;
-                text-align: left;
-            }
-            
-            .card:hover {
-                border-color: #555555;
-                transform: translateY(-2px);
-            }
-            
-            .card h3 {
-                font-size: 1.125rem;
-                font-weight: 600;
-                margin-bottom: 0.5rem;
-                color: #ffffff;
-            }
-            
-            .card p {
-                color: #888888;
-                font-size: 0.875rem;
-                margin-bottom: 1rem;
-            }
-            
-            .card a {
-                display: inline-flex;
-                align-items: center;
-                color: #ffffff;
-                text-decoration: none;
-                font-size: 0.875rem;
-                font-weight: 500;
-                padding: 0.5rem 1rem;
-                background-color: #222222;
-                border-radius: 6px;
-                border: 1px solid #333333;
-                transition: all 0.2s ease;
-            }
-            
-            .card a:hover {
-                background-color: #333333;
-                border-color: #555555;
-            }
-            
-            .status-badge {
-                display: inline-flex;
-                align-items: center;
-                gap: 0.5rem;
-                background-color: #0070f3;
-                color: #ffffff;
-                padding: 0.25rem 0.75rem;
-                border-radius: 20px;
-                font-size: 0.75rem;
-                font-weight: 500;
-                margin-bottom: 2rem;
-            }
-            
-            .status-dot {
-                width: 6px;
-                height: 6px;
-                background-color: #00ff88;
-                border-radius: 50%;
-            }
-            
-            pre {
-                background-color: #0a0a0a;
-                border: 1px solid #333333;
-                border-radius: 6px;
-                padding: 1rem;
-                overflow-x: auto;
-                margin: 0;
-            }
-            
-            code {
-                font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-                font-size: 0.85rem;
-                line-height: 1.5;
-                color: #ffffff;
-            }
-            
-            /* Syntax highlighting */
-            .keyword {
-                color: #ff79c6;
-            }
-            
-            .string {
-                color: #f1fa8c;
-            }
-            
-            .function {
-                color: #50fa7b;
-            }
-            
-            .class {
-                color: #8be9fd;
-            }
-            
-            .module {
-                color: #8be9fd;
-            }
-            
-            .variable {
-                color: #f8f8f2;
-            }
-            
-            .decorator {
-                color: #ffb86c;
-            }
-            
-            @media (max-width: 768px) {
-                nav {
-                    padding: 1rem;
-                    flex-direction: column;
-                    gap: 1rem;
-                }
-                
-                .nav-links {
-                    margin-left: 0;
-                }
-                
-                main {
-                    padding: 2rem 1rem;
-                }
-                
-                h1 {
-                    font-size: 2rem;
-                }
-                
-                .hero-code {
-                    grid-template-columns: 1fr;
-                }
-                
-                .cards {
-                    grid-template-columns: 1fr;
-                }
-            }
-        </style>
-    </head>
-    <body>
-        <header>
-            <nav>
-                <a href="/" class="logo">Vercel + FastAPI</a>
-                <div class="nav-links">
-                    <a href="/docs">API Docs</a>
-                    <a href="/api/data">API</a>
-                </div>
-            </nav>
-        </header>
-        <main>
-            <div class="hero">
-                <h1>Vercel + FastAPI</h1>
-                <div class="hero-code">
-                    <pre><code><span class="keyword">from</span> <span class="module">fastapi</span> <span class="keyword">import</span> <span class="class">FastAPI</span>
+@app.delete("/books/{book_id}")
+def delete_book(book_id: str):
 
-<span class="variable">app</span> = <span class="class">FastAPI</span>()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
 
-<span class="decorator">@app.get</span>(<span class="string">"/"</span>)
-<span class="keyword">def</span> <span class="function">read_root</span>():
-    <span class="keyword">return</span> {<span class="string">"Python"</span>: <span class="string">"on Vercel"</span>}</code></pre>
-                </div>
-            </div>
-            
-            <div class="cards">
-                <div class="card">
-                    <h3>Interactive API Docs</h3>
-                    <p>Explore this API's endpoints with the interactive Swagger UI. Test requests and view response schemas in real-time.</p>
-                    <a href="/docs">Open Swagger UI →</a>
-                </div>
-                
-                <div class="card">
-                    <h3>Sample Data</h3>
-                    <p>Access sample JSON data through our REST API. Perfect for testing and development purposes.</p>
-                    <a href="/api/data">Get Data →</a>
-                </div>
-                
-            </div>
-        </main>
-    </body>
-    </html>
-    """
+    cur.execute(
+        "SELECT status FROM books WHERE id=%s",
+        (book_id,)
+    )
+
+    book = cur.fetchone()
+
+    if not book:
+        db.close()
+
+        raise HTTPException(
+            status_code=404,
+            detail="Buku tidak ditemukan"
+        )
+
+    if book["status"] == "dipinjam":
+        db.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Tidak bisa hapus buku yang sedang dipinjam"
+        )
+
+    cur.execute(
+        "DELETE FROM books WHERE id=%s",
+        (book_id,)
+    )
+
+    db.commit()
+
+    db.close()
+
+    return {
+        "message": "Buku berhasil dihapus"
+    }
+
+
+# ══════════════════════════════════════════════
+# LOANS
+# ══════════════════════════════════════════════
+
+@app.get("/loans")
+def get_loans():
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT
+            l.*,
+            b.title as book_title,
+            b.author as book_author
+        FROM loans l
+        JOIN books b
+        ON l.book_id = b.id
+        ORDER BY l.borrow_date DESC
+    """)
+
+    loans = cur.fetchall()
+
+    db.close()
+
+    for loan in loans:
+        for k, v in loan.items():
+            if isinstance(v, (date, datetime)):
+                loan[k] = str(v)
+
+    return loans
+
+
+@app.get("/loans/active")
+def get_active_loans():
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT
+            l.*,
+            b.title as book_title,
+            b.author as book_author
+        FROM loans l
+        JOIN books b
+        ON l.book_id = b.id
+        WHERE l.status IN ('dipinjam','terlambat')
+        ORDER BY l.due_date ASC
+    """)
+
+    loans = cur.fetchall()
+
+    db.close()
+
+    for loan in loans:
+        for k, v in loan.items():
+            if isinstance(v, (date, datetime)):
+                loan[k] = str(v)
+
+    return loans
+
+
+@app.post("/loans/borrow")
+def borrow_book(data: BorrowModel):
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    # cek anggota
+    print(data.member_id)
+    cur.execute("""
+            SELECT *
+            FROM members
+            WHERE member_code=%s
+        """, (data.member_id,))
+
+    member = cur.fetchone()
+
+    if not member:
+
+            db.close()
+
+            raise HTTPException(
+        status_code=400,
+        detail=
+        "Mahasiswa belum terdaftar sebagai anggota perpustakaan"
+    )
+
+    # cek buku
+    cur.execute(
+        "SELECT * FROM books WHERE id=%s",
+        (data.book_id,)
+    )
+
+    book = cur.fetchone()
+
+    if not book:
+        db.close()
+
+        raise HTTPException(
+            status_code=404,
+            detail="Buku tidak ditemukan"
+        )
+
+    if book["status"] != "tersedia":
+        db.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Buku sedang tidak tersedia"
+        )
+
+    today = date.today().isoformat()
+
+    # insert peminjaman
+    cur.execute("""
+        INSERT INTO loans (
+            book_id,
+            user_id,
+            borrower_name,
+            member_id,
+            phone,
+            borrow_date,
+            due_date,
+            status
+        )
+        VALUES (
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s
+        )
+    """, (
+        data.book_id,
+        data.user_id,
+        data.borrower_name,
+        data.member_id,
+        data.phone,
+        today,
+        data.due_date,
+        "dipinjam"
+    ))
+
+    # update status buku
+    cur.execute("""
+        UPDATE books
+        SET status='dipinjam'
+        WHERE id=%s
+    """, (data.book_id,))
+
+    db.commit()
+
+    db.close()
+
+    return {
+        "message":
+        f"Buku '{book['title']}' berhasil dipinjam oleh {data.borrower_name}"
+    }
+
+
+@app.post("/loans/return")
+def return_book(data: ReturnModel):
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT
+            l.*,
+            b.title as book_title
+        FROM loans l
+        JOIN books b
+        ON l.book_id = b.id
+        WHERE l.book_id=%s
+        AND l.status IN ('dipinjam','terlambat')
+        ORDER BY l.borrow_date DESC
+        LIMIT 1
+    """, (data.book_id,))
+
+    loan = cur.fetchone()
+
+    if not loan:
+        db.close()
+
+        raise HTTPException(
+            status_code=404,
+            detail="Tidak ada peminjaman aktif"
+        )
+
+    today = date.today().isoformat()
+
+    cur.execute("""
+        UPDATE loans
+        SET
+            status='dikembalikan',
+            return_date=%s
+        WHERE id=%s
+    """, (
+        today,
+        loan["id"]
+    ))
+
+    # update status buku
+    cur.execute("""
+        UPDATE books
+        SET status='tersedia'
+        WHERE id=%s
+    """, (data.book_id,))
+
+    db.commit()
+
+    db.close()
+
+    for k, v in loan.items():
+        if isinstance(v, (date, datetime)):
+            loan[k] = str(v)
+
+    return {
+        "message":
+        f"Pengembalian '{loan['book_title']}' berhasil",
+        "loan": loan
+    }
+
+
+@app.get("/stats")
+def get_stats():
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    # total buku
+    cur.execute("""
+        SELECT COUNT(*) as total
+        FROM books
+    """)
+
+    total = cur.fetchone()["total"]
+
+    # dipinjam
+    cur.execute("""
+        SELECT COUNT(*) as c
+        FROM books
+        WHERE status='dipinjam'
+    """)
+
+    borrowed = cur.fetchone()["c"]
+
+    # tersedia
+    cur.execute("""
+        SELECT COUNT(*) as c
+        FROM books
+        WHERE status='tersedia'
+    """)
+
+    available = cur.fetchone()["c"]
+
+    # update terlambat
+    cur.execute("""
+        UPDATE loans
+        SET status='terlambat'
+        WHERE due_date < CURDATE()
+        AND status='dipinjam'
+    """)
+
+    db.commit()
+
+    # total terlambat
+    cur.execute("""
+        SELECT COUNT(*) as c
+        FROM loans
+        WHERE status='terlambat'
+    """)
+
+    overdue = cur.fetchone()["c"]
+
+    # total anggota
+    cur.execute("""
+        SELECT COUNT(*) as c
+        FROM members
+    """)
+
+    members = cur.fetchone()["c"]
+
+    db.close()
+
+    return {
+        "total": total,
+        "borrowed": borrowed,
+        "available": available,
+        "overdue": overdue,
+        "members": members
+    }
+
+# ══════════════════════════════════════════════
+# USERS
+# ══════════════════════════════════════════════
+
+@app.get("/users")
+def get_users():
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT
+            id,
+            username,
+            role
+        FROM users
+    """)
+
+    users = cur.fetchall()
+
+    db.close()
+
+    return users
+
+# ══════════════════════════════════════════════
+# MEMBERS
+# ══════════════════════════════════════════════
+
+@app.get("/members")
+def get_members():
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT *
+        FROM members
+        ORDER BY id DESC
+    """)
+
+    members = cur.fetchall()
+
+    db.close()
+
+    return members
+
+
+@app.post("/members")
+def add_member(data: MemberModel):
+
+    db = get_db()
+    cur = db.cursor()
+
+    try:
+
+        cur.execute("""
+            INSERT INTO members (
+                member_code,
+                name,
+                nim,
+                major,
+                phone,
+                address
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
+            )
+        """, (
+            data.member_code,
+            data.name,
+            data.nim,
+            data.major,
+            data.phone,
+            data.address
+        ))
+
+        db.commit()
+
+    except mysql.connector.IntegrityError:
+
+        db.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Kode anggota sudah ada"
+        )
+
+    db.close()
+
+    return {
+        "message":
+        f"Anggota '{data.name}' berhasil ditambahkan"
+    }
+
+@app.put("/members/{member_id}")
+def update_member(member_id: int, data: MemberModel):
+
+    db = get_db()
+    cur = db.cursor()
+
+    try:
+        cur.execute("""
+            UPDATE members
+            SET
+                member_code=%s,
+                name=%s,
+                nim=%s,
+                major=%s,
+                phone=%s,
+                address=%s
+            WHERE id=%s
+        """, (
+            data.member_code,
+            data.name,
+            data.nim,
+            data.major,
+            data.phone,
+            data.address,
+            member_id,
+        ))
+
+        if cur.rowcount == 0:
+            db.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Anggota tidak ditemukan"
+            )
+
+        db.commit()
+
+    except mysql.connector.IntegrityError:
+
+        db.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Kode anggota sudah ada"
+        )
+
+    db.close()
+
+    return {
+        "message":
+        f"Anggota '{data.name}' berhasil diperbarui"
+    }
+
+@app.delete("/members/{member_id}")
+def delete_member(member_id: int):
+
+    db = get_db()
+    cur = db.cursor()
+
+    cur.execute("""
+        DELETE FROM members
+        WHERE id=%s
+    """, (member_id,))
+
+    if cur.rowcount == 0:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Anggota tidak ditemukan"
+        )
+
+    db.commit()
+    db.close()
+
+    return {
+        "message": "Anggota berhasil dihapus"
+    }
+
+@app.get("/members/search")
+def search_members(q: str = ""):
+
+    db = get_db()
+
+    cur = db.cursor(
+        dictionary=True
+    )
+
+    like = f"%{q}%"
+
+    cur.execute("""
+        SELECT *
+        FROM members
+        WHERE
+            name LIKE %s
+            OR nim LIKE %s
+            OR member_code LIKE %s
+    """, (
+        like,
+        like,
+        like
+    ))
+
+    data = cur.fetchall()
+
+    db.close()
+
+    return data
+# ══════════════════════════════════════════════
+# RUN SERVER
+# ══════════════════════════════════════════════
+
+if __name__ == "__main__":
+
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )
