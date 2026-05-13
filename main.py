@@ -1,4 +1,3 @@
-```python
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,11 +16,13 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+
 # =========================================================
 # APP
 # =========================================================
 
 app = FastAPI(title="Sistem Perpustakaan API")
+
 
 # =========================================================
 # CORS
@@ -35,17 +36,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # =========================================================
 # DATABASE
 # =========================================================
 
-DATABASE_URL = "postgresql://postgres.xshxmatydgamddlrrzgs:5rRCHdMbqWL88ZLh@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?sslmode=require"
+DATABASE_URL = "postgresql://USERNAME:PASSWORD@HOST:6543/postgres?sslmode=require"
+
 
 def get_db():
     return psycopg2.connect(
         DATABASE_URL,
         cursor_factory=RealDictCursor
     )
+
 
 # =========================================================
 # MODELS
@@ -90,6 +94,7 @@ class RequestRekomendasi(BaseModel):
     genre: str
     subgenre: str
 
+
 # =========================================================
 # DATASET REKOMENDASI
 # =========================================================
@@ -100,10 +105,7 @@ DATASET_PATH = BASE_DIR / "dataset_buku.csv"
 
 IMAGES_DIR = BASE_DIR / "static/images"
 
-IMAGES_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
+IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount(
     "/images",
@@ -121,6 +123,7 @@ else:
         "judul",
         "pengarang",
         "klasifikasi",
+        "status",
         "genre_utama",
         "subgenre",
         "genre",
@@ -130,52 +133,32 @@ else:
 
 df = df.fillna("")
 
-def normalize_filename(text):
 
-    return (
-        text
-        .lower()
-        .strip()
-        .replace(" ", "_")
-    )
+def normalize_filename(text):
+    return text.lower().strip().replace(" ", "_")
+
 
 def find_existing_image(judul):
 
     base_name = normalize_filename(judul)
 
-    for ext in [
-        "jpg",
-        "jpeg",
-        "png",
-        "webp"
-    ]:
+    for ext in ["jpg", "jpeg", "png", "webp"]:
 
-        file_path = (
-            IMAGES_DIR /
-            f"{base_name}.{ext}"
-        )
+        file_path = IMAGES_DIR / f"{base_name}.{ext}"
 
         if file_path.exists():
-
-            return (
-                f"/images/"
-                f"{base_name}.{ext}"
-            )
+            return f"/images/{base_name}.{ext}"
 
     return "/images/no_cover.png"
 
+
 if len(df) > 0:
+    df["image_url"] = df["judul"].apply(find_existing_image)
 
-    df["image_url"] = (
-        df["judul"]
-        .apply(find_existing_image)
-    )
-
-vectorizer = TfidfVectorizer(
-    stop_words=None
-)
+vectorizer = TfidfVectorizer(stop_words=None)
 
 tfidf_matrix = None
+
 
 def update_tfidf():
 
@@ -184,16 +167,15 @@ def update_tfidf():
     if len(df) == 0:
 
         tfidf_matrix = None
-
         return
 
-    tfidf_matrix = vectorizer.fit_transform(
-        df["content"]
-    )
+    tfidf_matrix = vectorizer.fit_transform(df["content"])
+
 
 update_tfidf()
 
 search_log = Counter()
+
 
 # =========================================================
 # AUTH
@@ -232,6 +214,7 @@ def login(data: LoginModel):
         "role": user["role"]
     }
 
+
 # =========================================================
 # BOOKS
 # =========================================================
@@ -245,7 +228,7 @@ def get_books():
     cur.execute("""
         SELECT *
         FROM books
-        ORDER BY id
+        ORDER BY title
     """)
 
     books = cur.fetchall()
@@ -281,7 +264,7 @@ def search_books(q: str = ""):
     db = get_db()
     cur = db.cursor()
 
-    like = f"%{q}%"
+    search = f"%{q}%"
 
     cur.execute("""
         SELECT *
@@ -292,9 +275,9 @@ def search_books(q: str = ""):
             OR id ILIKE %s
         ORDER BY title
     """, (
-        like,
-        like,
-        like
+        search,
+        search,
+        search
     ))
 
     books = cur.fetchall()
@@ -322,12 +305,7 @@ def add_book(book: BookModel):
                 borrowed_count
             )
             VALUES (
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                0
+                %s,%s,%s,%s,%s,0
             )
         """, (
             book.id,
@@ -342,7 +320,6 @@ def add_book(book: BookModel):
     except psycopg2.IntegrityError:
 
         db.rollback()
-
         db.close()
 
         raise HTTPException(
@@ -402,6 +379,7 @@ def delete_book(book_id: str):
         "message": "Buku berhasil dihapus"
     }
 
+
 # =========================================================
 # LOANS
 # =========================================================
@@ -431,11 +409,7 @@ def get_loans():
 
         for k, v in loan.items():
 
-            if isinstance(v, (
-                date,
-                datetime
-            )):
-
+            if isinstance(v, (date, datetime)):
                 loan[k] = str(v)
 
     return loans
@@ -493,11 +467,7 @@ def borrow_book(data: BorrowModel):
     # CHECK STOCK
     # =========================
 
-    if (
-        book["borrowed_count"]
-        >=
-        book["stock"]
-    ):
+    if book["borrowed_count"] >= book["stock"]:
 
         db.close()
 
@@ -506,11 +476,11 @@ def borrow_book(data: BorrowModel):
             detail="Stok buku habis"
         )
 
+    today = date.today().isoformat()
+
     # =========================
     # INSERT LOAN
     # =========================
-
-    today = date.today().isoformat()
 
     cur.execute("""
         INSERT INTO loans (
@@ -538,13 +508,12 @@ def borrow_book(data: BorrowModel):
     ))
 
     # =========================
-    # UPDATE COUNT
+    # UPDATE BOOK
     # =========================
 
     cur.execute("""
         UPDATE books
-        SET borrowed_count =
-            borrowed_count + 1
+        SET borrowed_count = borrowed_count + 1
         WHERE id=%s
     """, (data.book_id,))
 
@@ -553,8 +522,7 @@ def borrow_book(data: BorrowModel):
     db.close()
 
     return {
-        "message":
-            f"{book['title']} berhasil dipinjam"
+        "message": f"{book['title']} berhasil dipinjam"
     }
 
 
@@ -567,11 +535,9 @@ def return_book(data: ReturnModel):
     cur.execute("""
         SELECT *
         FROM loans
-        WHERE book_id=%s
-        AND status IN (
-            'dipinjam',
-            'terlambat'
-        )
+        WHERE
+            book_id=%s
+            AND status IN ('dipinjam','terlambat')
         ORDER BY borrow_date DESC
         LIMIT 1
     """, (data.book_id,))
@@ -605,16 +571,13 @@ def return_book(data: ReturnModel):
     ))
 
     # =========================
-    # REDUCE COUNT
+    # UPDATE BOOK
     # =========================
 
     cur.execute("""
         UPDATE books
         SET borrowed_count =
-            GREATEST(
-                borrowed_count - 1,
-                0
-            )
+            GREATEST(borrowed_count - 1, 0)
         WHERE id=%s
     """, (data.book_id,))
 
@@ -623,9 +586,9 @@ def return_book(data: ReturnModel):
     db.close()
 
     return {
-        "message":
-            "Buku berhasil dikembalikan"
+        "message": "Buku berhasil dikembalikan"
     }
+
 
 # =========================================================
 # STATS
@@ -637,8 +600,6 @@ def get_stats():
     db = get_db()
     cur = db.cursor()
 
-    # TOTAL JUDUL BUKU
-
     cur.execute("""
         SELECT COUNT(*) AS total
         FROM books
@@ -646,42 +607,31 @@ def get_stats():
 
     total = cur.fetchone()["total"]
 
-    # TOTAL DIPINJAM
-
     cur.execute("""
-        SELECT COALESCE(
-            SUM(borrowed_count),
-            0
-        ) AS total
+        SELECT COALESCE(SUM(borrowed_count), 0) AS total
         FROM books
     """)
 
     borrowed = cur.fetchone()["total"]
 
-    # TOTAL TERSEDIA
-
     cur.execute("""
-        SELECT COALESCE(
-            SUM(stock - borrowed_count),
-            0
-        ) AS total
+        SELECT
+            COUNT(*) AS total
         FROM books
+        WHERE borrowed_count < stock
     """)
 
     available = cur.fetchone()["total"]
 
-    # UPDATE TERLAMBAT
-
     cur.execute("""
         UPDATE loans
         SET status='terlambat'
-        WHERE due_date < CURRENT_DATE
-        AND status='dipinjam'
+        WHERE
+            due_date < CURRENT_DATE
+            AND status='dipinjam'
     """)
 
     db.commit()
-
-    # TOTAL TERLAMBAT
 
     cur.execute("""
         SELECT COUNT(*) AS total
@@ -690,8 +640,6 @@ def get_stats():
     """)
 
     overdue = cur.fetchone()["total"]
-
-    # TOTAL MEMBER
 
     cur.execute("""
         SELECT COUNT(*) AS total
@@ -710,9 +658,29 @@ def get_stats():
         "members": members
     }
 
+
 # =========================================================
 # MEMBERS
 # =========================================================
+
+@app.get("/members")
+def get_members():
+
+    db = get_db()
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT *
+        FROM members
+        ORDER BY id DESC
+    """)
+
+    members = cur.fetchall()
+
+    db.close()
+
+    return members
+
 
 @app.get("/members/search")
 def search_members(q: str = ""):
@@ -741,25 +709,6 @@ def search_members(q: str = ""):
     db.close()
 
     return results
-
-
-@app.get("/members")
-def get_members():
-
-    db = get_db()
-    cur = db.cursor()
-
-    cur.execute("""
-        SELECT *
-        FROM members
-        ORDER BY id DESC
-    """)
-
-    members = cur.fetchall()
-
-    db.close()
-
-    return members
 
 
 @app.post("/members")
@@ -807,12 +756,12 @@ def add_member(data: MemberModel):
     db.close()
 
     return {
-        "message":
-            "Member berhasil ditambahkan"
+        "message": "Member berhasil ditambahkan"
     }
 
+
 # =========================================================
-# REKOMENDASI
+# RECOMMENDATION
 # =========================================================
 
 @app.post("/recommend")
@@ -825,14 +774,9 @@ def recommend(data: RequestRekomendasi):
             "popular": []
         }
 
-    query_text = (
-        f"{data.genre} "
-        f"{data.subgenre}"
-    )
+    query_text = f"{data.genre} {data.subgenre}"
 
-    query_vec = vectorizer.transform([
-        query_text
-    ])
+    query_vec = vectorizer.transform([query_text])
 
     similarity = cosine_similarity(
         query_vec,
@@ -852,9 +796,7 @@ def recommend(data: RequestRekomendasi):
             "pengarang": row["pengarang"],
             "klasifikasi": row["klasifikasi"],
             "image_url": row["image_url"],
-            "description":
-                f"Buku karya "
-                f"{row['pengarang']}"
+            "description": f"Buku karya {row['pengarang']}"
         })
 
         search_log[row["judul"]] += 1
@@ -862,11 +804,10 @@ def recommend(data: RequestRekomendasi):
     return {
         "recommendations": hasil,
         "popular": [
-            j
-            for j, _
-            in search_log.most_common(5)
+            j for j, _ in search_log.most_common(5)
         ]
     }
+
 
 # =========================================================
 # ROOT
@@ -876,9 +817,9 @@ def recommend(data: RequestRekomendasi):
 def root():
 
     return {
-        "message":
-            "API Perpustakaan aktif"
+        "message": "API Perpustakaan aktif"
     }
+
 
 # =========================================================
 # RUN
@@ -889,9 +830,8 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "main:app",
+        app,
         host="0.0.0.0",
         port=8000,
         reload=True
     )
-```
