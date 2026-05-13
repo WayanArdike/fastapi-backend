@@ -580,7 +580,35 @@ def get_stats():
 # =========================================================
 # MEMBERS
 # =========================================================
+@app.get("/members/search")
+def search_members(q: str = ""):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
 
+    sql = """
+    SELECT *
+    FROM members
+    WHERE
+        name LIKE %s
+        OR nim LIKE %s
+        OR member_code LIKE %s
+    """
+
+    search = f"%{q}%"
+
+    cursor.execute(sql, (
+        search,
+        search,
+        search
+    ))
+
+    results = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return results
+    
 @app.get("/members")
 def get_members():
 
