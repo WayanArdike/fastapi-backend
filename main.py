@@ -185,6 +185,8 @@ def login(data: LoginModel):
         "role": user["role"]
     }
 
+```python id="mj3kpa"
+
 # =========================================================
 # BOOKS
 # =========================================================
@@ -217,7 +219,7 @@ def get_available_books():
     cur.execute("""
         SELECT *
         FROM books
-        WHERE status='tersedia'
+        WHERE borrowed_count < stock
         ORDER BY title
     """)
 
@@ -239,10 +241,16 @@ def search_books(q: str = ""):
     cur.execute("""
         SELECT *
         FROM books
-        WHERE title ILIKE %s
-        OR author ILIKE %s
-        OR id ILIKE %s
-    """, (like, like, like))
+        WHERE
+            title ILIKE %s
+            OR author ILIKE %s
+            OR id ILIKE %s
+        ORDER BY title
+    """, (
+        like,
+        like,
+        like
+    ))
 
     books = cur.fetchall()
 
@@ -265,20 +273,23 @@ def add_book(book: BookModel):
                 title,
                 author,
                 category,
-                status
+                stock,
+                borrowed_count
             )
             VALUES (
                 %s,
                 %s,
                 %s,
                 %s,
-                'tersedia'
+                %s,
+                0
             )
         """, (
             book.id,
             book.title,
             book.author,
-            book.category
+            book.category,
+            book.stock
         ))
 
         db.commit()
@@ -306,14 +317,16 @@ def delete_book(book_id: str):
     db = get_db()
     cur = db.cursor()
 
-    cur.execute(
-        "SELECT status FROM books WHERE id=%s",
-        (book_id,)
-    )
+    cur.execute("""
+        SELECT *
+        FROM books
+        WHERE id=%s
+    """, (book_id,))
 
     book = cur.fetchone()
 
     if not book:
+
         db.close()
 
         raise HTTPException(
@@ -321,23 +334,27 @@ def delete_book(book_id: str):
             detail="Buku tidak ditemukan"
         )
 
-    if book["status"] == "dipinjam":
+    if book["borrowed_count"] > 0:
+
         db.close()
 
         raise HTTPException(
             status_code=400,
-            detail="Buku sedang dipinjam"
+            detail="Buku masih dipinjam"
         )
 
-    cur.execute(
-        "DELETE FROM books WHERE id=%s",
-        (book_id,)
-    )
+    cur.execute("""
+        DELETE FROM books
+        WHERE id=%s
+    """, (book_id,))
 
     db.commit()
     db.close()
 
-    return {"message": "Buku berhasil dihapus"}
+    return {
+        "message": "Buku berhasil dihapus"
+    }
+
 
 # =========================================================
 # LOANS
@@ -365,7 +382,9 @@ def get_loans():
     db.close()
 
     for loan in loans:
+
         for k, v in loan.items():
+
             if isinstance(v, (date, datetime)):
                 loan[k] = str(v)
 
@@ -378,6 +397,10 @@ def borrow_book(data: BorrowModel):
     db = get_db()
     cur = db.cursor()
 
+    # =========================
+    # CHECK MEMBER
+    # =========================
+
     cur.execute("""
         SELECT *
         FROM members
@@ -387,12 +410,17 @@ def borrow_book(data: BorrowModel):
     member = cur.fetchone()
 
     if not member:
+
         db.close()
 
         raise HTTPException(
             status_code=400,
             detail="Member belum terdaftar"
         )
+
+    # =========================
+    # CHECK BOOK
+    # =========================
 
     cur.execute("""
         SELECT *
@@ -403,6 +431,7 @@ def borrow_book(data: BorrowModel):
     book = cur.fetchone()
 
     if not book:
+
         db.close()
 
         raise HTTPException(
@@ -410,13 +439,22 @@ def borrow_book(data: BorrowModel):
             detail="Buku tidak ditemukan"
         )
 
-    if book["status"] != "tersedia":
+    # =========================
+    # CHECK STOCK
+    # =========================
+
+    if book["borrowed_count"] >= book["stock"]:
+
         db.close()
 
         raise HTTPException(
             status_code=400,
-            detail="Buku tidak tersedia"
+            detail="Stok buku habis"
         )
+
+    # =========================
+    # INSERT LOAN
+    # =========================
 
     today = date.today().isoformat()
 
@@ -445,9 +483,14 @@ def borrow_book(data: BorrowModel):
         "dipinjam"
     ))
 
+    # =========================
+    # UPDATE BORROW COUNT
+    # =========================
+
     cur.execute("""
         UPDATE books
-        SET status='dipinjam'
+        SET borrowed_count =
+            borrowed_count + 1
         WHERE id=%s
     """, (data.book_id,))
 
@@ -455,7 +498,8 @@ def borrow_book(data: BorrowModel):
     db.close()
 
     return {
-        "message": f"{book['title']} berhasil dipinjam"
+        "message":
+            f"{book['title']} berhasil dipinjam"
     }
 
 
@@ -469,7 +513,10 @@ def return_book(data: ReturnModel):
         SELECT *
         FROM loans
         WHERE book_id=%s
-        AND status IN ('dipinjam','terlambat')
+        AND status IN (
+            'dipinjam',
+            'terlambat'
+        )
         ORDER BY borrow_date DESC
         LIMIT 1
     """, (data.book_id,))
@@ -477,6 +524,7 @@ def return_book(data: ReturnModel):
     loan = cur.fetchone()
 
     if not loan:
+
         db.close()
 
         raise HTTPException(
@@ -485,6 +533,10 @@ def return_book(data: ReturnModel):
         )
 
     today = date.today().isoformat()
+
+    # =========================
+    # UPDATE LOAN
+    # =========================
 
     cur.execute("""
         UPDATE loans
@@ -497,9 +549,17 @@ def return_book(data: ReturnModel):
         loan["id"]
     ))
 
+    # =========================
+    # REDUCE BORROW COUNT
+    # =========================
+
     cur.execute("""
         UPDATE books
-        SET status='tersedia'
+        SET borrowed_count =
+            GREATEST(
+                borrowed_count - 1,
+                0
+            )
         WHERE id=%s
     """, (data.book_id,))
 
@@ -507,8 +567,11 @@ def return_book(data: ReturnModel):
     db.close()
 
     return {
-        "message": "Buku berhasil dikembalikan"
+        "message":
+            "Buku berhasil dikembalikan"
     }
+```
+
 
 # =========================================================
 # STATS
