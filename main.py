@@ -41,7 +41,7 @@ app.add_middleware(
 # DATABASE
 # =========================================================
 
-DATABASE_URL = "postgresql://USERNAME:PASSWORD@HOST:6543/postgres?sslmode=require"
+DATABASE_URL = "postgresql://postgres.xshxmatydgamddlrrzgs:5rRCHdMbqWL88ZLh@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?sslmode=require"
 
 
 def get_db():
