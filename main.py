@@ -1,6 +1,10 @@
+```python
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 from pydantic import BaseModel
+
 from datetime import date, datetime
 from pathlib import Path
 from collections import Counter
@@ -12,8 +16,6 @@ import pandas as pd
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
-from fastapi.staticfiles import StaticFiles
 
 # =========================================================
 # APP
@@ -34,7 +36,7 @@ app.add_middleware(
 )
 
 # =========================================================
-# DATABASE SUPABASE
+# DATABASE
 # =========================================================
 
 DATABASE_URL = "postgresql://postgres.xshxmatydgamddlrrzgs:5rRCHdMbqWL88ZLh@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?sslmode=require"
@@ -59,6 +61,7 @@ class BookModel(BaseModel):
     title: str
     author: str
     category: str
+    stock: int
 
 
 class BorrowModel(BaseModel):
@@ -92,21 +95,32 @@ class RequestRekomendasi(BaseModel):
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+
 DATASET_PATH = BASE_DIR / "dataset_buku.csv"
+
 IMAGES_DIR = BASE_DIR / "static/images"
 
-IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+IMAGES_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
-app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
+app.mount(
+    "/images",
+    StaticFiles(directory=IMAGES_DIR),
+    name="images"
+)
 
 if DATASET_PATH.exists():
+
     df = pd.read_csv(DATASET_PATH)
+
 else:
+
     df = pd.DataFrame(columns=[
         "judul",
         "pengarang",
         "klasifikasi",
-        "status",
         "genre_utama",
         "subgenre",
         "genre",
@@ -117,33 +131,65 @@ else:
 df = df.fillna("")
 
 def normalize_filename(text):
-    return text.lower().strip().replace(" ", "_")
+
+    return (
+        text
+        .lower()
+        .strip()
+        .replace(" ", "_")
+    )
 
 def find_existing_image(judul):
+
     base_name = normalize_filename(judul)
 
-    for ext in ["jpg", "jpeg", "png", "webp"]:
-        file_path = IMAGES_DIR / f"{base_name}.{ext}"
+    for ext in [
+        "jpg",
+        "jpeg",
+        "png",
+        "webp"
+    ]:
+
+        file_path = (
+            IMAGES_DIR /
+            f"{base_name}.{ext}"
+        )
 
         if file_path.exists():
-            return f"/images/{base_name}.{ext}"
+
+            return (
+                f"/images/"
+                f"{base_name}.{ext}"
+            )
 
     return "/images/no_cover.png"
 
 if len(df) > 0:
-    df["image_url"] = df["judul"].apply(find_existing_image)
 
-vectorizer = TfidfVectorizer(stop_words=None)
+    df["image_url"] = (
+        df["judul"]
+        .apply(find_existing_image)
+    )
+
+vectorizer = TfidfVectorizer(
+    stop_words=None
+)
+
 tfidf_matrix = None
 
 def update_tfidf():
+
     global tfidf_matrix
 
     if len(df) == 0:
+
         tfidf_matrix = None
+
         return
 
-    tfidf_matrix = vectorizer.fit_transform(df["content"])
+    tfidf_matrix = vectorizer.fit_transform(
+        df["content"]
+    )
 
 update_tfidf()
 
@@ -159,21 +205,22 @@ def login(data: LoginModel):
     db = get_db()
     cur = db.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT *
         FROM users
         WHERE username=%s
         AND password=%s
-        """,
-        (data.username, data.password)
-    )
+    """, (
+        data.username,
+        data.password
+    ))
 
     user = cur.fetchone()
 
     db.close()
 
     if not user:
+
         raise HTTPException(
             status_code=401,
             detail="Username atau password salah"
@@ -184,8 +231,6 @@ def login(data: LoginModel):
         "username": user["username"],
         "role": user["role"]
     }
-
-```python id="mj3kpa"
 
 # =========================================================
 # BOOKS
@@ -297,6 +342,7 @@ def add_book(book: BookModel):
     except psycopg2.IntegrityError:
 
         db.rollback()
+
         db.close()
 
         raise HTTPException(
@@ -349,12 +395,12 @@ def delete_book(book_id: str):
     """, (book_id,))
 
     db.commit()
+
     db.close()
 
     return {
         "message": "Buku berhasil dihapus"
     }
-
 
 # =========================================================
 # LOANS
@@ -385,7 +431,11 @@ def get_loans():
 
         for k, v in loan.items():
 
-            if isinstance(v, (date, datetime)):
+            if isinstance(v, (
+                date,
+                datetime
+            )):
+
                 loan[k] = str(v)
 
     return loans
@@ -443,7 +493,11 @@ def borrow_book(data: BorrowModel):
     # CHECK STOCK
     # =========================
 
-    if book["borrowed_count"] >= book["stock"]:
+    if (
+        book["borrowed_count"]
+        >=
+        book["stock"]
+    ):
 
         db.close()
 
@@ -484,7 +538,7 @@ def borrow_book(data: BorrowModel):
     ))
 
     # =========================
-    # UPDATE BORROW COUNT
+    # UPDATE COUNT
     # =========================
 
     cur.execute("""
@@ -495,6 +549,7 @@ def borrow_book(data: BorrowModel):
     """, (data.book_id,))
 
     db.commit()
+
     db.close()
 
     return {
@@ -550,7 +605,7 @@ def return_book(data: ReturnModel):
     ))
 
     # =========================
-    # REDUCE BORROW COUNT
+    # REDUCE COUNT
     # =========================
 
     cur.execute("""
@@ -564,14 +619,13 @@ def return_book(data: ReturnModel):
     """, (data.book_id,))
 
     db.commit()
+
     db.close()
 
     return {
         "message":
             "Buku berhasil dikembalikan"
     }
-```
-
 
 # =========================================================
 # STATS
@@ -583,6 +637,8 @@ def get_stats():
     db = get_db()
     cur = db.cursor()
 
+    # TOTAL JUDUL BUKU
+
     cur.execute("""
         SELECT COUNT(*) AS total
         FROM books
@@ -590,21 +646,31 @@ def get_stats():
 
     total = cur.fetchone()["total"]
 
-    cur.execute("""
-        SELECT COUNT(*) AS c
-        FROM books
-        WHERE status='dipinjam'
-    """)
-
-    borrowed = cur.fetchone()["c"]
+    # TOTAL DIPINJAM
 
     cur.execute("""
-        SELECT COUNT(*) AS c
+        SELECT COALESCE(
+            SUM(borrowed_count),
+            0
+        ) AS total
         FROM books
-        WHERE status='tersedia'
     """)
 
-    available = cur.fetchone()["c"]
+    borrowed = cur.fetchone()["total"]
+
+    # TOTAL TERSEDIA
+
+    cur.execute("""
+        SELECT COALESCE(
+            SUM(stock - borrowed_count),
+            0
+        ) AS total
+        FROM books
+    """)
+
+    available = cur.fetchone()["total"]
+
+    # UPDATE TERLAMBAT
 
     cur.execute("""
         UPDATE loans
@@ -615,20 +681,24 @@ def get_stats():
 
     db.commit()
 
+    # TOTAL TERLAMBAT
+
     cur.execute("""
-        SELECT COUNT(*) AS c
+        SELECT COUNT(*) AS total
         FROM loans
         WHERE status='terlambat'
     """)
 
-    overdue = cur.fetchone()["c"]
+    overdue = cur.fetchone()["total"]
+
+    # TOTAL MEMBER
 
     cur.execute("""
-        SELECT COUNT(*) AS c
+        SELECT COUNT(*) AS total
         FROM members
     """)
 
-    members = cur.fetchone()["c"]
+    members = cur.fetchone()["total"]
 
     db.close()
 
@@ -643,6 +713,7 @@ def get_stats():
 # =========================================================
 # MEMBERS
 # =========================================================
+
 @app.get("/members/search")
 def search_members(q: str = ""):
 
@@ -670,7 +741,8 @@ def search_members(q: str = ""):
     db.close()
 
     return results
-    
+
+
 @app.get("/members")
 def get_members():
 
@@ -724,6 +796,7 @@ def add_member(data: MemberModel):
     except psycopg2.IntegrityError:
 
         db.rollback()
+
         db.close()
 
         raise HTTPException(
@@ -734,7 +807,8 @@ def add_member(data: MemberModel):
     db.close()
 
     return {
-        "message": "Member berhasil ditambahkan"
+        "message":
+            "Member berhasil ditambahkan"
     }
 
 # =========================================================
@@ -745,14 +819,20 @@ def add_member(data: MemberModel):
 def recommend(data: RequestRekomendasi):
 
     if tfidf_matrix is None:
+
         return {
             "recommendations": [],
             "popular": []
         }
 
-    query_text = f"{data.genre} {data.subgenre}"
+    query_text = (
+        f"{data.genre} "
+        f"{data.subgenre}"
+    )
 
-    query_vec = vectorizer.transform([query_text])
+    query_vec = vectorizer.transform([
+        query_text
+    ])
 
     similarity = cosine_similarity(
         query_vec,
@@ -772,14 +852,20 @@ def recommend(data: RequestRekomendasi):
             "pengarang": row["pengarang"],
             "klasifikasi": row["klasifikasi"],
             "image_url": row["image_url"],
-            "description": f"Buku karya {row['pengarang']}"
+            "description":
+                f"Buku karya "
+                f"{row['pengarang']}"
         })
 
         search_log[row["judul"]] += 1
 
     return {
         "recommendations": hasil,
-        "popular": [j for j, _ in search_log.most_common(5)]
+        "popular": [
+            j
+            for j, _
+            in search_log.most_common(5)
+        ]
     }
 
 # =========================================================
@@ -788,8 +874,10 @@ def recommend(data: RequestRekomendasi):
 
 @app.get("/")
 def root():
+
     return {
-        "message": "API Perpustakaan aktif"
+        "message":
+            "API Perpustakaan aktif"
     }
 
 # =========================================================
@@ -806,3 +894,4 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
+```
