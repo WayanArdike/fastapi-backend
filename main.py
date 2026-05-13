@@ -72,7 +72,7 @@ class BorrowModel(BaseModel):
     user_id: int
     book_id: str
     borrower_name: str
-    member_id: str
+    nim: str
     phone: str
     due_date: str
 
@@ -421,31 +421,23 @@ def borrow_book(data: BorrowModel):
     db = get_db()
     cur = db.cursor()
 
-    # =========================
-    # CHECK MEMBER
-    # =========================
-
+    # cek member pakai NIM
     cur.execute("""
         SELECT *
         FROM members
-        WHERE member_code=%s
-    """, (data.member_id,))
+        WHERE nim=%s
+    """, (data.nim,))
 
     member = cur.fetchone()
 
     if not member:
-
         db.close()
-
         raise HTTPException(
             status_code=400,
-            detail="Member belum terdaftar"
+            detail="NIM tidak terdaftar"
         )
 
-    # =========================
-    # CHECK BOOK
-    # =========================
-
+    # cek buku
     cur.execute("""
         SELECT *
         FROM books
@@ -455,32 +447,20 @@ def borrow_book(data: BorrowModel):
     book = cur.fetchone()
 
     if not book:
-
         db.close()
-
         raise HTTPException(
             status_code=404,
             detail="Buku tidak ditemukan"
         )
 
-    # =========================
-    # CHECK STOCK
-    # =========================
-
     if book["borrowed_count"] >= book["stock"]:
-
         db.close()
-
         raise HTTPException(
             status_code=400,
-            detail="Stok buku habis"
+            detail="Stok habis"
         )
 
     today = date.today().isoformat()
-
-    # =========================
-    # INSERT LOAN
-    # =========================
 
     cur.execute("""
         INSERT INTO loans (
@@ -493,23 +473,17 @@ def borrow_book(data: BorrowModel):
             due_date,
             status
         )
-        VALUES (
-            %s,%s,%s,%s,%s,%s,%s,%s
-        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
     """, (
         data.book_id,
         data.user_id,
         data.borrower_name,
-        data.member_id,
+        data.nim,
         data.phone,
         today,
         data.due_date,
         "dipinjam"
     ))
-
-    # =========================
-    # UPDATE BOOK
-    # =========================
 
     cur.execute("""
         UPDATE books
@@ -518,7 +492,6 @@ def borrow_book(data: BorrowModel):
     """, (data.book_id,))
 
     db.commit()
-
     db.close()
 
     return {
